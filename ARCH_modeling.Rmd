@@ -1,0 +1,201 @@
+---
+title: "ARCH_modeling"
+author: "Krasnukhina"
+date: "2022-11-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+url="https://faculty.chicagobooth.edu/-/media/faculty/ruey-s-tsay/teaching/fts3/m-mrk4608.txt"
+return<-read.table(url,header = TRUE)
+```
+
+```{r}
+library(zoo)
+library(xts)
+library(knitr)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(lmtest)
+library(forecast)
+library(dplyr)
+library(tseries)
+library(urca)
+library(DescTools)
+
+library(tsdl)
+library(gridExtra)
+library(tseries)
+library(fGarch)
+```
+
+
+```{r}
+#date = as.Date(return$date, "%Y%m%d")
+return_ts = as.ts(return[,-1])
+```
+
+TASK 0 
+```{r}
+return_ts = as.ts(return_ts[1:608])
+```
+
+TASK 1
+```{r}
+autoplot(return_ts)
+```
+
+```{r}
+autoplot(return_ts^2)
+```
+Автоплот в абсолютных значениях и в квадратах приводят к один и тем же выводам: пики больше похожи на выбросы, но однозначного понимания о равенстве дисперсии константе нет, если предположение о зависимости дисперсии от времени, необходима дополнительная проверка.
+
+TASK 2
+```{r}
+p1<- ggAcf(return_ts)
+p2<- ggPacf(return_ts)
+
+gridExtra::grid.arrange(p1,p2,nrow=1)
+```
+```{r}
+p1<- ggAcf(return_ts^2)
+p2<- ggPacf(return_ts^2)
+
+gridExtra::grid.arrange(p1,p2,nrow=1)
+```
+Обе пары графиков свидетельствует о наличии автокорреляции в исследуемом показателе, так как значения PACF выходят за пределы доверительного интервала.
+
+TASK 3
+```{r}
+for (p in seq(5, 10, 1)){
+  for (q in seq(5, 10, 1)){
+    # Make ARMA model with appropriate lags, write equation 
+    x = Arima(return_ts,order=c(p,0,q))
+    checkresiduals(x)
+  }
+}
+```
+При переборе порядков интегрирования от 0 до 1, первая модель с чистыми остатками - (5,0,6).
+Оставим ARMA(5,0,6).
+
+TASK 2.A
+```{r}
+return_56 = Arima(return_ts,order=c(5,0,6))
+AIC(return_56)
+```
+
+```{r}
+checkresiduals(return_56$residuals)
+```
+Автокорреляция в остатках отсутствует так как значения не выходят за предели 95-процентного доверительного интервала.
+
+TASK 2.B
+```{r}
+
+Box.test(return_56$residuals, type="Lj")
+```
+Нулевая гипотеза состоит в том, что все коэффициенты равны нулю, то есть не значимы. p-value = 0.98 > любого адекватного уровня значимости, значит нулевая гипотеза не отклоняется, поэтому коэффициенты не значимы, то есть автокорреляции в остатказ на 1% уровне значимости нет.
+
+```{r}
+ggPacf(return_56$residuals^2)
+```
+Согласно графику PACF в модели присутствует ARCH - эффект.
+```{r}
+#LM Test, in this command use residuals (not squares)
+#install.packages("nortsTest")
+library(nortsTest)
+arch.test(return_56$residuals)
+```
+P-value меньше 5% уровня значимости, нулевая гипотеза о том, что все коэффициенты равны нулю отклоняется => присутствует ARCH-эффект.
+
+```{r}
+library(fGarch)
+m1=garchFit(res~garch(1,0),trace=F, data=return_56$residuals, include.mean = FALSE)
+summary(m1) # Obtain results
+```
+В тестах arque-Bera Test и Shapiro-Wilk Test нулевая гипотеза соответствует нормальности. В нашем случае на 1% уровне значимости она не отвергается. 
+
+Согласно результатам Ljung-Box Test на остатках p-value близок к 1, следовательно на любом уровне значимости нулевая гипотеза о равенстве коэффициентов 0 не отвергается, значит модель ARIMA(5,0,6) специфицирована верно.
+
+Согласно результатам Ljung-Box Test на остатках в квадратах p-value меньше 0,01 для любого количества лагов, следовательно нулевая гипотеза отвергается на 1% уровне и это говорит нам о присутствии ARCH эффекта, следовательно в модели учтено недостаточное количество лагов (не вся автокорреляция)
+
+```{r}
+g1=garchFit(res~garch(3,0),trace=F, data=return_56$residuals)
+summary(g1) # Obtain results
+```
+Наименьшее количество лагов, при котором p-value в Ljung-Box Test становится достаточным для того, чтобы не отвергнуть нулевую гипотезу о равенстве 0 коэффициентов и отсутствии ARCH эффекта = 3. Спецификация с тремя лагами позволяет учесть всю автокорреляцию и при этом информационный критерий AIC даже уменьшается примерно на 0,01.
+
+```{r}
+autoplot(volatility(g1,type = "sigma"))
+```
+
+```{r}
+
+plot(return_ts, type = "l") + points(volatility(g1, type = "sigma"), col = 'red', cex = 0.5)
+```
+
+```{r}
+#plot for a part of graph
+plot(return_ts, subset=(index(return_ts)<=100))
+```
+
+
+```{r}
+#install.packages("ggpubr")
+library(ggpubr)
+ggplot_return_ts = ggplot(return_ts)
+ggplot_rvolatility = ggplot(as.data.frame(fGarch::volatility(g1,type = "sigma")))
+
+ggarrange(ggplot_return_ts, ggplot_rvolatility)
+
+```
+Стоит заметить, что график волатильности 
+
+```{r}
+#Нарисуем QQ-plot
+qqnorm(return_56$residuals, pch = 1, frame = FALSE)
+qqline(return_56$residuals, col = "steelblue", lwd = 2)
+```
+
+```{r}
+# Реализуем Shapiro-Wilk test на нормальность остатков 
+shapiro.test(return_56$residuals)
+```
+p-value = 0.005624 меньше 1% уровня значимости, следовательно нулевая гипотеза о нормальности распределения остатков отвергается. 
+
+```{r}
+m1_std=fGarch::garchFit(res~garch(1,0),trace=F,cond.dist='std', data=return_56$residuals)
+summary(m1_std)
+```
+В тестах arque-Bera Test и Shapiro-Wilk Test нулевая гипотеза соответствует нормальности. В нашем случае на 1% уровне значимости она не отвергается. 
+
+Согласно результатам Ljung-Box Test на остатках p-value близок к 1, следовательно на любом уровне значимости нулевая гипотеза о равенстве коэффициентов 0 не отвергается, значит модель ARMA(506) специфицирована верно.
+
+Согласно результатам Ljung-Box Test на остатках в квадратах p-value меньше 0,01 для любого количества лагов, следовательно нулевая гипотеза отвергается на 1% уровне и это говорит нам о присутствии ARCH эффекта, следовательно в модели учтено недостаточное количество лагов (не вся автокорреляция)
+
+```{r}
+library(fGarch)
+m2_std=garchFit(res~garch(3,0),trace=F,cond.dist='std', data=return_56$residuals, include.mean = FALSE)
+summary(m2_std)
+```
+Наименьшее количество лагов, при котором p-value в Ljung-Box Test становится достаточным для того чтобы не отвергнуть нулевую гипотезу о равенстве 0 коэффициентов и отсутствии ARCH эффекта = 3. Спецификация с тремя лагами позволяет учесть всю автокорреляцию и при этом информационный критерий AIC незначительно изменяется при увеличении лагов.
+
+
+```{r}
+library(fGarch)
+m_garch=garchFit(res~garch(1,1),trace=F, data=return_56$residuals, include.mean = FALSE)
+summary(m_garch) # Obtain results
+```
+Нами были проверены спецификации с лагами из промежутка от 1 до 3. Значение информационного критерия практически не меняется при изменении количества лагов, при этом даже спецификация (1,1) согласно тесту Ljung-Box Test на квадратичных остатках позволяет учесть весь арч эффект, поэтому мы отдаем приоритет спецификации с наименьшим количеством лагов и выбираем в качестве лучшей - GARCH(1,1).
+
+В тестах Jarque-Bera Test и Shapiro-Wilk Test нулевая гипотеза соответствует нормальности. В нашем случае даже на 1% уровне значимости она не отвергается. Из чего следует вывод: остатки модели GARCH(1,1) распределены нормально. 
+
+Согласно результатам Ljung-Box Test на остатках p-value близок к 1, следовательно на любом уровне значимости нулевая гипотеза о равенстве коэффициентов 0 не отвергается, значит модель ARMA(506) специфицирована верно.
+
+Согласно результатам Ljung-Box Test на остатках в квадратах p-value больше 1% уровня значимости, следовательно нулевая гипотеза не может быть отвергнута, что говорит о том, что спецификация GARCH(1,1) позволяет учесть весь ARCH-эффект.
+
+```{r}
+m1=garchFit(return_ts~arma(5,6)+garch(1,1),trace=F, data=return_ts, include.mean = FALSE)
+summary(m1)
+```
+
